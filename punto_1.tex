@@ -40,5 +40,117 @@ ros2 launch ros2_kdl_package launching.launch.py cmd_interface:=velocity ctrl:=v
   \end{lstlisting}    
 
 
+	\item We created a new controller in the \texttt{kdl\_control} class called \texttt{velocity\_ctrl\_null} that implements 
+the following velocity control law:
+
+\begin{equation}
+    \dot{q} = J^{\dagger} K_p e_p + (I - J^{\dagger}J)\dot{q}_0
+\end{equation}
+
+where $J^{\dagger}$ is the Jacobian pseudoinverse, $e_p$ is the position error and $\dot{q}_0$ is the joint velocity that keeps the manipulator far from joint limits
+
+\begin{equation}
+    \dot{q}_0 = \nabla \sum_{i=1}^{n} \frac{1}{\lambda}
+    \frac{(q_i^{+} - q_i)^{2}}{(q_i^{+} - q_i(t))(q_i(t) - q_i^{-})},
+\end{equation}
+
+where $\lambda$ is a scaling factor, and $q_i^{+}$ and $q_i^{-}$ are the $i$--th upper and lower joint limit, respectively.
+
+ \begin{lstlisting}[language=C++]
+
+KDL::JntArray KDLController::velocity_ctrl_null(Eigen::Matrix<double,6,1> error_position,int Kp)
+                                                
+{
+    unsigned int nj = robot_->getNrJnts();
+
+    Eigen::MatrixXd J;
+    J = robot_->getEEJacobian().data;
+
+    Eigen::MatrixXd I;
+    I = Eigen::MatrixXd::Identity(nj,nj);
+
+    Eigen::MatrixXd JntLimits_ (nj,2);
+    JntLimits_ = robot_->getJntLimits();
+
+    Eigen::VectorXd q_min(nj);
+    Eigen::VectorXd q_max(nj);
+    q_min = JntLimits_.col(0);
+    q_max = JntLimits_.col(1);
+
+    Eigen::VectorXd q(nj);
+    q  = robot_->getJntValues();
+
+    double lambda = 50;
+
+    Eigen::VectorXd q0_dot(nj);
+    for (unsigned int i = 0; i<nj; i++) {
+        
+        double L =(q_max(i) - q_min(i))*(q_max(i) - q_min(i));
+
+        double G = (2*q(i) - q_max(i) - q_min(i));
+
+        double D = (q_max(i)- q(i))*(q(i)- q_min(i));
+
+        q0_dot(i) = 1/lambda*L*G/(D*D);
+
+    }
+
+    Eigen::MatrixXd J_pinv = pseudoinverse(robot_->getEEJacobian().data);
     
+    Eigen::VectorXd qd_vec(nj);
+    qd_vec = J_pinv * error_position * Kp + (I-J_pinv*J)*q0_dot; 
+
+    KDL::JntArray qd(nj);
+
+    qd.data = qd_vec;
+
+    return qd;
+}
+  \end{lstlisting}    
+
+We tested the new control mode and compared to the previous velocity control. Here are reported the plots of the commanded velocities and the joint position values: 
+
+
+\begin{figure}[h!]
+    \centering
+    \includegraphics[width=0.7\textwidth]{img/vel.jpeg}
+    \caption{velocity command comparison}
+    \label{fig:vel}
+\end{figure}
+
+\begin{figure}[h!]
+    \centering
+    \includegraphics[width=0.7\textwidth]{img/joints.jpeg}
+    \caption{joints position values}
+    \label{fig:joints}
+\end{figure}
+
+\newpage Adding these lines in the launch file, we can switch between the two velocity controllers: 
+ \begin{lstlisting}[language=python]
+ cmd_interface_arg = DeclareLaunchArgument(
+        'cmd_interface', 
+        default_value='velocity',
+        description='Select controller: position, velocity or effort'
+    )
+    
+    ctrl_arg = DeclareLaunchArgument(
+        'ctrl', 
+        default_value='velocity_ctrl',
+        description='Select velocity controller: velocity_ctrl or velocity_ctrl_null'
+    )
+
+    cmd_interface_val = LaunchConfiguration('cmd_interface')
+    ctrl_val = LaunchConfiguration('ctrl')
+  \end{lstlisting}    
+
+
+Launching this command we can use the new velocity controller:
+ \begin{lstlisting}[language=bash]
+ros2 launch ros2_kdl_package launching.launch.py cmd_interface:=velocity ctrl:=velocity_ctrl_null
+  \end{lstlisting}   
+
+
+
+
+ 
 \end{enumerate}
