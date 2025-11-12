@@ -1,138 +1,138 @@
-We added sensors and controllers to our robot and spawned it in Gazebo
+Vision-based control
+
 \begin{enumerate}
-    \item We had to create a package named \lstinline|armando_gazebo| using ros2 CLI. Within this package, we created a launch folder containing an \lstinline|armando_world.launch| file and filled it with commands that load the URDF into the \lstinline|/robot_description| topic and spawn the robot using the create node in the \lstinline|ros_gz_sim| package
-    
-    \begin{lstlisting}[language=bash]
-user@alex:~/ros2_ws/src$ tree
-   armando_gazebo
-        CMakeLists.txt
-        LICENSE
-        launch
-            armando_world.launch.py
-        package.xml
-        urdf
-            armando_camera.xacro
-    \end{lstlisting}
-    We took the main functions from the \lstinline|gazebo.launch.py| from the repository \url{https://github.com/RoboticsLab2025/ros2_urdf.git} to get the robot to spawn in gazebo. 
-    In line 27 of our \lstinline|armando_world.launch.py| file we modified the default value of \lstinline|package_arg| setting it to "armando\_description".
-    We also modified the default value of \lstinline|model_arg| (line 33) to "urdf/amr.urdf"; note that this file in the next points will become "arm.urdf.xacro". 
-    
-    In the \lstinline|package.xml| file, located in the \lstinline|armando_gazebo| folder we added this two commands:
-      \begin{lstlisting}[language=bash]
-        <depend>urdf-launch</depend> (line 17)
-        
-        <gazebo_ros gazebo_model_path="${prefix}/.." /> (line 21)
-       \end{lstlisting}
-       
-	Here is the output of the command 
- \begin{lstlisting}[language=bash]
-    ros2 launch armando_gazebo armando_world.launch.py
-  \end{lstlisting}
-  
- \item We add a \lstinline|PositionJointInterface| as a hardware interface to our robot using the \lstinline|ros2_control|
-framework.
-
-This is the part of the code we put in the \lstinline|armando_hardware_interface.xacro| file that allowed us to use the framework. The file is in the \lstinline|armando_description/urdf| folder and it contains a macro that defines the hardware interface for the joints of our robot.
+  \item We constructed a gazebo world, named \lstinline|empty.world|, inserting an aruco tag and detected it via the \lstinline|aruco_ros| package (link \href{https://github.com/pal-robotics/aruco_ros.git}{here}). With these lines we added the aruco tag:
 \begin{lstlisting}[language=html]
-  <gazebo>  
-    <plugin filename="ign_ros2_control-system" name="ign_ros2_control::IgnitionROS2ControlPlugin">
-    <parameters>$(find armando_description)/config/armando_controllers.yaml</parameters>
-      <controller_manager_prefix_node_name>controller_manager</controller_manager_prefix_node_name>
-    </plugin>
-  </gazebo>
- <xacro:include filename = "$(find armando_description)/urdf/ros2_control/joint_initial_pos.xacro"/>
-  <ros2_control name="HardwareInterface_Ignition" type="system">
-
-    <hardware>
-      <plugin>ign_ros2_control/IgnitionSystem</plugin> 
-    </hardware>
-    \end{lstlisting}
-    
-   Then we added this line to \lstinline|arm.urdf.xacro| to include it in our main: 
-   \begin{lstlisting}[language=html]
-     <xacro:include filename="$(find armando_description)/urdf/armando_hardware_interface.xacro"/> 
-      \end{lstlisting}
-      
-      In the end, to load the URDF in our launch file we added this line to \lstinline|armando_display.launch.py|:
-      \begin{lstlisting}[language=bash]
-          xacro_path = os.path.join(armando_description_path, "urdf", "arm.urdf.xacro")
-              \end{lstlisting}
-
-\item We added inside the \lstinline|arm.urdf.xacro| the commands to enable the Gazebo ROS2 control plugin
-and load the joint position controllers from the \lstinline|armando_controllers.yaml| file :
-\begin{lstlisting}[language=html]
-<gazebo>  
-    <plugin filename="ign_ros2_control-system" name="ign_ros2_control::IgnitionROS2ControlPlugin">
-    <parameters>$(find armando_description)/config/armando_controllers.yaml</parameters>
-      <controller_manager_prefix_node_name>controller_manager</controller_manager_prefix_node_name>
-    </plugin>
-  </gazebo>    
-  \end{lstlisting}
+     <include>
+      <uri>
+        model://aruco_tag
+      </uri>
+      <name>aruco_tag</name>
+      <pose>0 -0.707 0.707 0 1.57 0</pose>
+    </include>
+\end{lstlisting}
   
-  In the \lstinline|.yaml| file we have:
-  \begin{lstlisting}[language=bash]
-  position_controller:
-  ros__parameters:
-    command_interfaces:
-      - position
-    state_interfaces:
-      - position
-      - velocity
-    joints:
-      - j0
-      - j1
-      - j2
-      - j3
-    \end{lstlisting}
+Then we created a folder \lstinline|gazebo/models|, in the \lstinline|iiwa_description| package of the \lstinline|ros2_iiwa| stack, containing the aruco marker model for gazebo. 
+ 
+We created a new model named \lstinline|aruco_tag| and imported it into a new Gazebo world as a static object in a position that is visible by the camera. Then we saved the new world into the \lstinline|/gazebo/worlds/|folder.
+\newline This is the \lstinline|model.sdf| file:
+  \begin{lstlisting}[language=html]
+  <?xml version="1.0" encoding="UTF-8"?>
+<sdf version='1.9'>
+  <model name='aruco_tag'>
+    <static>true</static>
+    <link name='base_link'>
+      <visual name='aruco_visual'>
+        <geometry>
+          <box>
+            <size>0.1 0.1 0.01</size>
+          </box>
+        </geometry>
+        <material>
+          <diffuse>1 1 1 1</diffuse>
+          <specular>0.4 0.4 0.4 1</specular>
+          <pbr>
+            <metal>
+              <albedo_map>model://aruco_tag/aruco-20.png</albedo_map>
+            </metal>
+          </pbr>
+        </material>
+      </visual>
+    </link>
+  </model>
+</sdf>
+  \end{lstlisting}
 
-\newpage To spawn the joint state broadcaster
-and the position controllers we added these lines in the \lstinline|armando_world.launch.py|:
-  \begin{lstlisting}[language=bash]
-   joint_state_broadcaster = Node(
-        package="controller_manager",
-        executable="spawner",
-        arguments=[
-            "joint_state_broadcaster",
-            "--controller-manager",
-            "/controller_manager"
-        ],
-    )
+And this is the code of our \lstinline|aruco_world|:
+  \begin{lstlisting}[language=html]
 
-    position_controller = Node(
-        package="controller_manager",
-        executable="spawner",
-        arguments=[
-            "position_controller",
-            "--controller-manager",
-            "/controller_manager"
-        ],
-        condition=UnlessCondition(PythonExpression(["'",control_mode_selected,"'", " == 'trajectory'"]))
-    )
-        \end{lstlisting}
-        
-        Note that this is the final version of our code, so it's already implemented the condition section which controls if the mode selected is "position" or "trajectory". 
-        
-        To load the controllers after Gazebo is started we added these lines in \lstinline|armando_world.launch.py|: 
-         \begin{lstlisting}[language=bash]
-     
-delay_joint_state_broadcaster = RegisterEventHandler(
-        event_handler=OnProcessExit(
-            target_action=gz_spawn_entity,
-            on_exit=[joint_state_broadcaster],
-        )
-    )
-    delay_controller = RegisterEventHandler(
-    event_handler=OnProcessExit(
-        target_action=gz_spawn_entity,
-        on_exit=[position_controller,trajectory_controller],
-    )
-)
-        \end{lstlisting}
-        
-    \newpage This graph, obtained by launching the command \lstinline|rqt_graph| while Gazebo is running, shows that the hardware interface is correctly loaded and connected: 
-   
+<?xml version="1.0" ?>
+<sdf version="1.4">
+<world name="aruco_world">
 
-Also from the terminal we have these messages: 
+<physics name="1ms" type="ignored">
+    <max_step_size>0.001</max_step_size>
+    <real_time_factor>1.0</real_time_factor>
+    </physics>
+    <plugin
+      filename="ignition-gazebo-physics-system"
+      name="gz::sim::systems::Physics">
+    </plugin>
+    <plugin
+      filename="ignition-gazebo-user-commands-system"
+      name="gz::sim::systems::UserCommands">
+    </plugin>
+    <plugin
+      filename="ignition-gazebo-scene-broadcaster-system"
+      name="gz::sim::systems::SceneBroadcaster">
+    </plugin>
+    <plugin
+      filename="ignition-gazebo-contact-system"
+      name="gz::sim::systems::Contact">
+    </plugin>
+
+    <light type="directional" name="sun">
+      <cast_shadows>true</cast_shadows>
+      <pose>0 0 10 0 0 0</pose>
+      <diffuse>0.8 0.8 0.8 1</diffuse>
+      <specular>0.2 0.2 0.2 1</specular>
+      <attenuation>
+        <range>1000</range>
+        <constant>0.9</constant>
+        <linear>0.01</linear>
+        <quadratic>0.001</quadratic>
+      </attenuation>
+      <direction>-0.5 0.1 -0.9</direction>
+    </light>
+
+    <model name="ground_plane">
+      <static>true</static>
+      <link name="link">
+        <collision name="collision">
+          <geometry>
+            <plane>
+              <normal>0 0 1</normal>
+              <size>100 100</size>
+            </plane>
+          </geometry>
+        </collision>
+        <visual name="visual">
+          <geometry>
+            <plane>
+              <normal>0 0 1</normal>
+              <size>100 100</size>
+            </plane>
+          </geometry>
+          <material>
+            <ambient>0.8 0.8 0.8 1</ambient>
+            <diffuse>0.8 0.8 0.8 1</diffuse>
+            <specular>0.8 0.8 0.8 1</specular>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+
+<include>
+  <uri>
+    model://aruco_tag/
+  </uri>
+  <name>aruco_tag</name>
+  <pose>-0.32 -0.83 0.43 2.54 1.57 3.14</pose>
+</include>
+
+<gravity>0 0 -9.81</gravity>
+
+  </world>
+</sdf>
+  \end{lstlisting}
+
+  
+  
+  
+  
+  
+
 
 \end{enumerate}  
 
