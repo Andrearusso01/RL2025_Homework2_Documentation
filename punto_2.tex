@@ -128,10 +128,173 @@ And this is the code of our \lstinline|aruco_world|:
   \end{lstlisting}
 
   
-\item
+\item We spawned the robot in our new gazebo world modifying the launch file:
+ 
+ \begin{lstlisting}[language=Python]
+ 	    iiwa_simulation_world = PathJoinSubstitution(
+        [FindPackageShare(description_package),
+            'gazebo/worlds', 'aruco_world']
+    )
+    
+    declared_arguments.append(
+        DeclareLaunchArgument(
+            'gz_args',
+            default_value=[
+                TextSubstitution(text='-r -v 1 '),  
+                iiwa_simulation_world               
+            ],
+            description='Arguments for gz_sim'
+        )
+    )
+\end{lstlisting}
+Then in \lstinline|kdl_control| class we added a new vision-based controller called \lstinline|vision_ctrl| , it can be activated from the terminal as well as the other velocity\_ctrl by inserting "vision" in the \lstinline|ctrl| ROS parameter.\\
+Then we created a subscribed to the aruco topic \lstinline|/aruco_single/pose| in the source code \lstinline|ros2_kdl_node.cpp|
+
+\begin{lstlisting}[language=C++]
+auto qos_profile = rclcpp::QoS(rclcpp::KeepLast(10)).reliable();
+MarkerPoseSubscriber_ = this->create_subscription<geometry_msgs::msg::PoseStamped>(
+            "/aruco_single/pose", qos_profile, std::bind(&Iiwa_pub_sub::aruco_pose_subscriber, this, std::placeholders::_1));
+            
+            ...
+            
+            void aruco_pose_subscriber(const geometry_msgs::msg::PoseStamped& pose_stamped_msg)
+    {
+        cPo_(0) = pose_stamped_msg.pose.position.x;
+        cPo_(1) = pose_stamped_msg.pose.position.y;
+        cPo_(2) = pose_stamped_msg.pose.position.z;
+    }
+\end{lstlisting}
+As already said, in \lstinline|kdl_control.cpp| we added the \lstinline|vision_ctrl| class: 
+
+\begin{lstlisting}[language=C++]
+KDL::JntArray KDLController::vision_ctrl(int Kp, Eigen::Vector3d cPo,Eigen::Vector3d sd )
+{
+    unsigned int nj = robot_->getNrJnts();
+
+    Eigen::Matrix<double,3,3> Rc;
+    Rc = toEigen(robot_->getEEFrame().M);//assumiamo che la matrice di rotazione siano approssimabili
+    Eigen::MatrixXd K(nj,nj);
+    K = 3*Kp*K.Identity(nj,nj);
+
+    Eigen::Matrix<double,6,6> R =Eigen::Matrix<double,6,6>::Zero();
+
+    R.block<3, 3>(0, 0) = Rc;
+    R.block<3, 3>(3, 3) = Rc;//.transpose();
+
+    Eigen::Vector3d s;
+    for (int i=0; i<3; i++){
+        s(i) = cPo(i)/cPo.norm();
+    }
+    
+    
+    RCLCPP_INFO(rclcpp::get_logger("KDLController"),
+                "vector s: %f %f %f",
+                s(0),s(1),s(2));
+    
+    Eigen::Matrix<double,3,3> L1;
+    L1 = -1/cPo.norm()* (Eigen::Matrix3d::Identity() - s*s.transpose());
+
+    Eigen::Matrix3d S_skew = Eigen::Matrix3d::Zero();
+    S_skew <<     0, -s.z(),  s.y(),
+                 s.z(),      0, -s.x(),
+                -s.y(),  s.x(),      0;
 
 
-\item We created a ROS 2 service to update the aruco marker position in Gazebo. We started from the \lstinline|/set_pose| ign service and then created a \lstinline|parameter_bridge| in the previously created launch file. 
+    Eigen::Matrix<double,3,3> L2;
+    L2 = S_skew;
+
+    Eigen::Matrix<double,3,6> L;
+
+    L.block<3, 3>(0, 0) = L1;
+    L.block<3, 3>(0, 3) = L2;
+    
+    L = L*R;
+
+    Eigen::MatrixXd J;
+    J = robot_->getEEJacobian().data;
+    Eigen::MatrixXd Jc; 
+    Jc  = J; //assumiamo che i due jacobiani siano uguali
+
+    
+    Eigen::MatrixXd I;
+    I = Eigen::MatrixXd::Identity(nj,nj);
+
+    Eigen::MatrixXd JntLimits_ (nj,2);
+    JntLimits_ = robot_->getJntLimits();
+
+    Eigen::VectorXd q_min(nj);
+    Eigen::VectorXd q_max(nj);
+    q_min = JntLimits_.col(0);
+    q_max = JntLimits_.col(1);
+
+    Eigen::VectorXd q(nj);
+    q  = robot_->getJntValues();
+
+    double lambda = 50;
+
+    Eigen::VectorXd q0_dot(nj);
+    for (unsigned int i = 0; i<nj; i++) {
+        
+        double L =(q_max(i) - q_min(i))*(q_max(i) - q_min(i));
+
+        double G = (2*q(i) - q_max(i) - q_min(i));
+
+        double D = (q_max(i)- q(i))*(q(i)- q_min(i));
+
+        q0_dot(i) = 1/lambda*L*G/(D*D);
+
+    }
+
+    Eigen::MatrixXd N (nj,nj);
+
+    N = I - pseudoinverse(J)*J;
+    
+    Eigen::MatrixXd J_pinv = pseudoinverse(L*J);
+    KDL::JntArray qd(nj);
+    qd.data =  K*J_pinv*sd + N * q0_dot;
+
+   
+    return qd;
+}
+\end{lstlisting}
+
+
+ Since the camera and the end effector are very near, we chose as Jacobian camera, the Jacobian of the end effector.  We did the same for the Rotation matrix, we were aware that they are different joints, but since we are not much interested about the orientation of the camera, with respect to the aruco tag, this approximation can be acceptable. \\
+ Then we computer the matrix $R$, the assignment required  that $R$ is 
+ $$
+ 	R = \begin{bmatrix}
+ 	R_c^T & 0 \\ 0 & R_c^T
+ 	\end{bmatrix}
+ $$
+ However we tried to impose this equation, but we noticed that the control performed much better without imposing the Transposition on the $R_c$ matrix. Then we computed the unit-norm axis $s$ and calculated the $L(s)$ matrix. Eventually we imposed that 
+
+
+ 	\[
+\dot{\mathbf{q}} = K (L(\mathbf{s}) J_c)^\dagger \mathbf{s_d} + N \dot{\mathbf{q}}_0
+\]
+
+Where K is a diagonal matrix and $\mathbf{s}_d = [0,0,1]$ which is the desired pointing direction.
+
+While the current direction is:
+
+\[
+\mathbf{s} = \frac{{}^{c}\mathbf{P}{o}}{\|{}^{c}\mathbf{P}{o}\|}
+\]
+
+
+\[
+L(\mathbf{s}) = \biggl[-\frac{1}{\|{}^{c}\mathbf{P}_{o}\|} \bigl(\mathbf{I} - \mathbf{s}\mathbf{s}^\top\bigr)\: \mathbf{S}(\mathbf{s}) \biggr] \mathbf{R}
+\]
+At this \href{https://www.youtube.com/watch?v=kjD034DE2o8}{link} it's possible to see the video of robot following the aruco tag. The plots shown in the video are here retrieved \ref{Vision_control}
+
+\begin{figure}
+\includegraphics[width=0.85\linewidth]{img/vel_vision}
+\caption{Commanded velocities with Vision Control}
+\label{Vision_control}
+\end{figure}
+
+
+\newpage \item We created a ROS 2 service to update the aruco marker position in Gazebo. We started from the \lstinline|/set_pose| ign service and then created a \lstinline|parameter_bridge| in the previously created launch file. 
 \newline This is the bridge code:
   \begin{lstlisting}[language=python]
 	bridge_set_pose = Node(
@@ -147,7 +310,7 @@ And this is the code of our \lstinline|aruco_world|:
    )
 \end{lstlisting}
 
-\newpage Then we tested the bridged service via ROS 2 service call:
+Then we tested the bridged service via ROS 2 service call:
   \begin{lstlisting}[language=bash]
 ros2 service call /set_aruco_pose ros_gz_interfaces/srv/SetEntityPose '{"entity": {"name": "aruco_tag", "type": 2}, "pose": {"position": {"x": 1.0, "y": 0.0, "z": 0.5}, "orientation": {"x": 0.0, "y": 0.0, "z": 0.0, "w": 1.0}}}'
 \end{lstlisting}

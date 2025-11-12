@@ -149,7 +149,306 @@ Launching this command we can use the new velocity controller:
 ros2 launch ros2_kdl_package launching.launch.py cmd_interface:=velocity ctrl:=velocity_ctrl_null
   \end{lstlisting}   
 
+\item We made our \lstinline|ros2_kdl_node| an action server that executes the same linear
+trajectory and publishes the position error as feedback.
 
+First of all we made a custom interface for this action and we put it in the action folder:
+
+\begin{lstlisting}[language=C++]
+
+	# Goal
+	int32 order
+	---
+	# Result
+	bool success
+	---
+	# Feedback
+	float64[3] position_error
+	
+\end{lstlisting}
+
+
+
+
+Then we added those lines in the CMakeLists file:
+
+\begin{lstlisting}[language=C++]
+
+	find_package(rclcpp_action REQUIRED)
+	find_package(action_msgs REQUIRED)
+	find_package(rosidl_default_generators REQUIRED)
+
+	rosidl_generate_interfaces(${PROJECT_NAME}
+  	"action/ExecuteTrajectory.action"
+  	DEPENDENCIES builtin_interfaces
+	)
+
+	rosidl_target_interfaces(ros2_kdl_node
+  	${PROJECT_NAME} "rosidl_typesupport_cpp"
+	)
+
+\end{lstlisting}
+
+Specifically, the \lstinline|find_package(rclcpp_action REQUIRED)| and \lstinline|rosidl_generate_interfaces()| commands allow the use of the APIs for managing actions and the automatic generation of goal, feedback, and result messages from the .action file, respectively.
+
+ 
+Then in the package.xml file we added those lines:
+
+\begin{lstlisting}[language=XML]
+	<buildtool_depend>rosidl_default_generators</buildtool_depend>
+	<depend>action_msgs</depend>
+	<member_of_group>rosidl_interface_packages</member_of_group>
+\end{lstlisting}
+
+
+The \lstinline|rosidl_default_generators| package automatically generates the source code for the ExecuteTrajectory action, while \lstinline|action_msgs| contains the standard messages used for communication between client and server.
+Finally, the \lstinline|<member_of_group>rosidl_interface_packages</member_of_group>| tag indicates that the package defines ROS 2 interfaces, so the build system can recognize and connect them correctly.
+
+
+Finally in the \lstinline|ros2_kdl_node.cpp| file we added some lines to define the action type and the handler:
+
+\begin{lstlisting}[language=C++]
+
+	using ExecuteTrajectory = ros2_kdl_package::action::ExecuteTrajectory;
+	using GoalHandleExecuteTrajectory = rclcpp_action::ServerGoalHandle<ExecuteTrajectory>;
+
+
+\end{lstlisting}
+
+Before creating the action server we removed the wall\_timer since we don't want to send the commands periodically based on a timer but we want to activate this action with a client.
+
+Then we created the actual server and we binded the 3 foundamental callback functions:
+
+\begin{lstlisting}[language=C++]
+
+this->action_server_ = rclcpp_action::create_server<ExecuteTrajectory>(
+    this,
+    "ExecuteTrajectory",
+    std::bind(&Iiwa_pub_sub::handle_goal, this, _1, _2),
+    std::bind(&Iiwa_pub_sub::handle_cancel, this, _1),
+    std::bind(&Iiwa_pub_sub::handle_accepted, this, _1));
+\end{lstlisting}
+Those functions are needed to handle new goal requests, goal cancellation and acceptation
+
+Here we can see the \lstinline|handle_goal| and the \lstinline|handle_cancel|.
+\begin{lstlisting}[language=C++]
+	
+	rclcpp_action::GoalResponse handle_goal(const rclcpp_action::GoalUUID & uuid,
+	                                        std::shared_ptr<const ExecuteTrajectory::Goal> goal){
+	    RCLCPP_INFO(this->get_logger(), "Received goal request with order %d", goal->order);
+    	return rclcpp_action::GoalResponse::ACCEPT_AND_EXECUTE;
+	}
+
+	rclcpp_action::CancelResponse handle_cancel(const std::shared_ptr<GoalHandleExecuteTrajectory> goal_handle){
+	    RCLCPP_INFO(this->get_logger(), "Received request to cancel goal");
+    	return rclcpp_action::CancelResponse::ACCEPT;
+	}
+
+\end{lstlisting}
+
+The most important one is the \lstinline|handle_accepted|:
+
+\begin{lstlisting}[language=C++]
+	
+	void handle_accepted(const std::shared_ptr<GoalHandleExecuteTrajectory> goal_handle){
+    	std::thread{std::bind(&Iiwa_pub_sub::execute, this, _1), goal_handle}.detach();
+	}
+
+\end{lstlisting}
+It executes a thread running the \lstinline|execute()| function:
+
+In this function we define the feedback and the result
+\begin{lstlisting}[language=C++]
+	
+	auto feedback = std::make_shared<ExecuteTrajectory::Feedback>();
+	auto result = std::make_shared<ExecuteTrajectory::Result>();
+
+
+\end{lstlisting}
+
+We use a while loop to continously update the robot state and compute the control commands:
+
+
+\begin{lstlisting}[language=C++]
+	
+	while (rclcpp::ok() && t < total_time && ctrl_ != "vision") {
+    	if (goal_handle->is_canceling()) {
+        	goal_handle->canceled(result);
+        	return;
+    	}
+    	...
+    	t+=dt;
+    	rate.sleep();
+	}
+
+\end{lstlisting}
+
+Note: In the next chapter we will add the vision control too so in the execute function we have a different behaviour depending on the control mode.
+
+This is how we compute the trajectory and the error
+
+\begin{lstlisting}[language=C++]
+	
+	if(traj_type_ == "linear"){
+    	if(s_type_ == "trapezoidal")
+        	p_ = planner_.linear_traj_trapezoidal(t);
+    	else
+        	p_ = planner_.linear_traj_cubic(t);
+	}
+
+	Eigen::Vector3d error = computeLinearError(p_.pos, Eigen::Vector3d(cartpos.p.data));
+
+
+\end{lstlisting}
+
+Then we send the error as feedback for the client:
+
+
+\begin{lstlisting}[language=C++]
+	
+	feedback->position_error = {error(0), error(1), error(2)};
+	goal_handle->publish_feedback(feedback);
+
+\end{lstlisting}
+
+
+Then we use the control method we made in the previous steps and finally we send the commands:
+
+
+
+\begin{lstlisting}[language=C++]
+	
+	robot_->update(toStdVector(joint_positions_.data), toStdVector(joint_velocities_.data));
+	std_msgs::msg::Float64MultiArray cmd_msg;
+    cmd_msg.data.assign(joint_velocities_cmd_.data.data(),
+                                joint_velocities_cmd_.data.data() + joint_velocities_cmd_.rows());
+    cmdPublisher_->publish(cmd_msg);
+
+
+\end{lstlisting}
+
+
+If instead the selected control is vision we enter in this loop:
+
+
+\begin{lstlisting}[language=C++]
+
+	while(rclcpp::ok() && ctrl_ == "vision"){
+    	...
+    	goal_handle->publish_feedback(feedback);
+    	cmdPublisher_->publish(cmd_msg);
+	}
+
+
+\end{lstlisting}
+
+
+At the end of the execution we send the success message:
+
+\begin{lstlisting}[language=C++]
+
+	result->success = true;
+	goal_handle->succeed(result);
+
+\end{lstlisting}
+
+
+Now we only have to create the action client that will send the order to the server.
+We made a new node called \lstinline|ros2_kdl_node_client.cpp| and we created a client for the \lstinline|ExecuteTrajectory| action;
+
+\begin{lstlisting}[language=C++]
+
+	client_ = rclcpp_action::create_client<ExecuteTrajectory>(this, "ExecuteTrajectory");
+
+\end{lstlisting}
+
+
+
+Then we created the \lstinline|send_goal()| function to define the goal message and we send it to the server:
+\begin{lstlisting}[language=C++]
+
+  void send_goal(int order)
+  {
+    auto goal_msg = ExecuteTrajectory::Goal();
+    goal_msg.order = order;
+
+    RCLCPP_INFO(this->get_logger(), "Sending Goal: %d", order);
+
+    auto options = rclcpp_action::Client<ExecuteTrajectory>::SendGoalOptions();
+    options.goal_response_callback =
+        std::bind(&ExecuteTrajectoryClient::goal_response_callback, this, std::placeholders::_1);
+    options.feedback_callback =
+        std::bind(&ExecuteTrajectoryClient::feedback_callback, this, std::placeholders::_1, std::placeholders::_2);
+    options.result_callback =
+        std::bind(&ExecuteTrajectoryClient::result_callback, this, std::placeholders::_1);
+
+    client_->async_send_goal(goal_msg, options);
+  }
+
+\end{lstlisting}
+
+
+After the goal is sent the client runs the following function:
+
+\begin{lstlisting}[language=C++]
+
+   void goal_response_callback(const GoalHandleExecuteTrajectory::SharedPtr & goal_handle)
+  {
+    if (!goal_handle) {
+      RCLCPP_ERROR(get_logger(), "Goal rifiutato dal server");
+    } else {
+      RCLCPP_INFO(get_logger(), "Goal accettato, in attesa del risultato...");
+    }
+  }
+
+\end{lstlisting}
+
+Then when the action starts it executes this function:
+
+
+\begin{lstlisting}[language=C++]
+
+  void feedback_callback(
+    GoalHandleExecuteTrajectory::SharedPtr,
+    const std::shared_ptr<const ExecuteTrajectory::Feedback> feedback)
+  {
+    RCLCPP_INFO(get_logger(),
+                "Feedback: position_error = [%f, %f, %f]",
+                feedback->position_error[0],
+                feedback->position_error[1],
+                feedback->position_error[2]);
+  }
+
+\end{lstlisting}
+
+that delivers info during the execution (in this case the \lstinline|position_error|)
+
+
+Finally we have the \lstinline|result_callback()| function:
+
+\begin{lstlisting}[language=C++]
+  void result_callback(const GoalHandleExecuteTrajectory::WrappedResult & result)
+  {
+    switch (result.code) {
+      case rclcpp_action::ResultCode::SUCCEEDED:
+        RCLCPP_INFO(get_logger(), "Goal Completed Succesfully: %s",
+                    result.result->success ? "true" : "false");
+        break;
+      case rclcpp_action::ResultCode::ABORTED:
+        RCLCPP_ERROR(get_logger(), "Goal Aborted");
+        break;
+      case rclcpp_action::ResultCode::CANCELED:
+        RCLCPP_WARN(get_logger(), "Goal Cancelled");
+        break;
+      default:
+        RCLCPP_ERROR(get_logger(), "Unknown Result");
+        break;
+    }
+    rclcpp::shutdown();
+  }
+\end{lstlisting}
+
+This is called at the end of the execution and it just checks the goal state.
 
 
  
