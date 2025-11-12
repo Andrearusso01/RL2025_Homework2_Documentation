@@ -128,10 +128,33 @@ And this is the code of our \lstinline|aruco_world|:
   \end{lstlisting}
 
   
-  
-  
-  
-  
+\item
+
+
+\item We created a ROS 2 service to update the aruco marker position in Gazebo. We started from the \lstinline|/set_pose| ign service and then created a \lstinline|parameter_bridge| in the previously created launch file. 
+\newline This is the bridge code:
+  \begin{lstlisting}[language=python]
+	bridge_set_pose = Node(
+        package='ros_gz_bridge',
+        executable='parameter_bridge',
+        arguments=[
+            f'/world/aruco_world/set_pose@ros_gz_interfaces/srv/SetEntityPose@gz.msgs.Pose@gz.msgs.Boolean',
+        ],
+        remappings=[
+            (f'/world/aruco_world/set_pose', '/set_aruco_pose'),
+        ],
+        output='screen'
+   )
+\end{lstlisting}
+
+\newpage Then we tested the bridged service via ROS 2 service call:
+  \begin{lstlisting}[language=bash]
+ros2 service call /set_aruco_pose ros_gz_interfaces/srv/SetEntityPose '{"entity": {"name": "aruco_tag", "type": 2}, "pose": {"position": {"x": 1.0, "y": 0.0, "z": 0.5}, "orientation": {"x": 0.0, "y": 0.0, "z": 0.0, "w": 1.0}}}'
+\end{lstlisting}
+
+This video shows how it works:
+\url{https://youtu.be/Mql9K-V0ZbU}
+
 
 
 \end{enumerate}  
