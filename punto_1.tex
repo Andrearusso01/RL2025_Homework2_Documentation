@@ -1,0 +1,44 @@
+
+
+
+Kinematic control
+\begin{enumerate}
+    \item We modified the \lstinline|ros2_kdl_node|, located in a file called \lstinline|launching.launch.py|, such that the following variables became ROS2 parameters: \lstinline|traj_duration, acc_duration, total_time, trajectory_len|, Kp, and the three components of the trajectory \lstinline|end_position|. 
+
+ \begin{lstlisting}[language=bash]
+  ros2_kdl_node = Node(
+        package='ros2_kdl_package',
+        executable='ros2_kdl_node',
+        name='ros2_kdl_node',
+        parameters=[
+            PathJoinSubstitution([
+                FindPackageShare('ros2_kdl_package'),   
+                'config',
+                'kdl_params.yaml'
+            ]),
+            {'cmd_interface': cmd_interface_val},
+            {'ctrl': ctrl_val}
+        ]
+    )
+ \end{lstlisting}    
+ 
+This is our \lstinline|kdl_params.yaml| (located in the config folder) and it contains the parameters' definition: 
+ \begin{lstlisting}[language=html]
+ros2_kdl_node:
+  ros__parameters:
+    traj_duration: 8.0
+    acc_duration: 5.0
+    total_time: 8.0
+    trajectory_len: 200
+    Kp: 1
+    end_position: [0.5, 0.3, 0.5]    
+  \end{lstlisting}    
+
+Then we added the launch command to the README file in our repo:
+ \begin{lstlisting}[language=bash]
+ros2 launch ros2_kdl_package launching.launch.py cmd_interface:=velocity ctrl:=velocity_ctrl
+  \end{lstlisting}    
+Note that the velocity ctrl parameter can be: \lstinline|velocity_ctrl, velocity_ctrl_null, vision|.
+
+    
+\end{enumerate}

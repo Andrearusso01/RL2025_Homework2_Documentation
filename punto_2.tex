@@ -1,0 +1,145 @@
+We added sensors and controllers to our robot and spawned it in Gazebo
+\begin{enumerate}
+    \item We had to create a package named \lstinline|armando_gazebo| using ros2 CLI. Within this package, we created a launch folder containing an \lstinline|armando_world.launch| file and filled it with commands that load the URDF into the \lstinline|/robot_description| topic and spawn the robot using the create node in the \lstinline|ros_gz_sim| package
+    
+    \begin{lstlisting}[language=bash]
+user@alex:~/ros2_ws/src$ tree
+   armando_gazebo
+        CMakeLists.txt
+        LICENSE
+        launch
+            armando_world.launch.py
+        package.xml
+        urdf
+            armando_camera.xacro
+    \end{lstlisting}
+    We took the main functions from the \lstinline|gazebo.launch.py| from the repository \url{https://github.com/RoboticsLab2025/ros2_urdf.git} to get the robot to spawn in gazebo. 
+    In line 27 of our \lstinline|armando_world.launch.py| file we modified the default value of \lstinline|package_arg| setting it to "armando\_description".
+    We also modified the default value of \lstinline|model_arg| (line 33) to "urdf/amr.urdf"; note that this file in the next points will become "arm.urdf.xacro". 
+    
+    In the \lstinline|package.xml| file, located in the \lstinline|armando_gazebo| folder we added this two commands:
+      \begin{lstlisting}[language=bash]
+        <depend>urdf-launch</depend> (line 17)
+        
+        <gazebo_ros gazebo_model_path="${prefix}/.." /> (line 21)
+       \end{lstlisting}
+       
+	Here is the output of the command 
+ \begin{lstlisting}[language=bash]
+    ros2 launch armando_gazebo armando_world.launch.py
+  \end{lstlisting}
+  
+ \item We add a \lstinline|PositionJointInterface| as a hardware interface to our robot using the \lstinline|ros2_control|
+framework.
+
+This is the part of the code we put in the \lstinline|armando_hardware_interface.xacro| file that allowed us to use the framework. The file is in the \lstinline|armando_description/urdf| folder and it contains a macro that defines the hardware interface for the joints of our robot.
+\begin{lstlisting}[language=html]
+  <gazebo>  
+    <plugin filename="ign_ros2_control-system" name="ign_ros2_control::IgnitionROS2ControlPlugin">
+    <parameters>$(find armando_description)/config/armando_controllers.yaml</parameters>
+      <controller_manager_prefix_node_name>controller_manager</controller_manager_prefix_node_name>
+    </plugin>
+  </gazebo>
+ <xacro:include filename = "$(find armando_description)/urdf/ros2_control/joint_initial_pos.xacro"/>
+  <ros2_control name="HardwareInterface_Ignition" type="system">
+
+    <hardware>
+      <plugin>ign_ros2_control/IgnitionSystem</plugin> 
+    </hardware>
+    \end{lstlisting}
+    
+   Then we added this line to \lstinline|arm.urdf.xacro| to include it in our main: 
+   \begin{lstlisting}[language=html]
+     <xacro:include filename="$(find armando_description)/urdf/armando_hardware_interface.xacro"/> 
+      \end{lstlisting}
+      
+      In the end, to load the URDF in our launch file we added this line to \lstinline|armando_display.launch.py|:
+      \begin{lstlisting}[language=bash]
+          xacro_path = os.path.join(armando_description_path, "urdf", "arm.urdf.xacro")
+              \end{lstlisting}
+
+\item We added inside the \lstinline|arm.urdf.xacro| the commands to enable the Gazebo ROS2 control plugin
+and load the joint position controllers from the \lstinline|armando_controllers.yaml| file :
+\begin{lstlisting}[language=html]
+<gazebo>  
+    <plugin filename="ign_ros2_control-system" name="ign_ros2_control::IgnitionROS2ControlPlugin">
+    <parameters>$(find armando_description)/config/armando_controllers.yaml</parameters>
+      <controller_manager_prefix_node_name>controller_manager</controller_manager_prefix_node_name>
+    </plugin>
+  </gazebo>    
+  \end{lstlisting}
+  
+  In the \lstinline|.yaml| file we have:
+  \begin{lstlisting}[language=bash]
+  position_controller:
+  ros__parameters:
+    command_interfaces:
+      - position
+    state_interfaces:
+      - position
+      - velocity
+    joints:
+      - j0
+      - j1
+      - j2
+      - j3
+    \end{lstlisting}
+
+\newpage To spawn the joint state broadcaster
+and the position controllers we added these lines in the \lstinline|armando_world.launch.py|:
+  \begin{lstlisting}[language=bash]
+   joint_state_broadcaster = Node(
+        package="controller_manager",
+        executable="spawner",
+        arguments=[
+            "joint_state_broadcaster",
+            "--controller-manager",
+            "/controller_manager"
+        ],
+    )
+
+    position_controller = Node(
+        package="controller_manager",
+        executable="spawner",
+        arguments=[
+            "position_controller",
+            "--controller-manager",
+            "/controller_manager"
+        ],
+        condition=UnlessCondition(PythonExpression(["'",control_mode_selected,"'", " == 'trajectory'"]))
+    )
+        \end{lstlisting}
+        
+        Note that this is the final version of our code, so it's already implemented the condition section which controls if the mode selected is "position" or "trajectory". 
+        
+        To load the controllers after Gazebo is started we added these lines in \lstinline|armando_world.launch.py|: 
+         \begin{lstlisting}[language=bash]
+     
+delay_joint_state_broadcaster = RegisterEventHandler(
+        event_handler=OnProcessExit(
+            target_action=gz_spawn_entity,
+            on_exit=[joint_state_broadcaster],
+        )
+    )
+    delay_controller = RegisterEventHandler(
+    event_handler=OnProcessExit(
+        target_action=gz_spawn_entity,
+        on_exit=[position_controller,trajectory_controller],
+    )
+)
+        \end{lstlisting}
+        
+    \newpage This graph, obtained by launching the command \lstinline|rqt_graph| while Gazebo is running, shows that the hardware interface is correctly loaded and connected: 
+   
+
+Also from the terminal we have these messages: 
+
+\end{enumerate}  
+
+ 
+
+      
+            
+              
+              
+              
